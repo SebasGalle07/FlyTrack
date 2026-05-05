@@ -1,0 +1,59 @@
+name: FlyTrack CI/CD
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-test-quality:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run quality analysis
+        run: ruff check .
+
+      - name: Run automated tests
+        run: pytest
+
+  docker-image:
+    runs-on: ubuntu-latest
+    needs: build-test-quality
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build container
+        run: docker build -t flytrack-api:${{ github.sha }} .
+
+      - name: Validate Docker Compose
+        run: docker compose config
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: docker-image
+    if: github.ref == 'refs/heads/main'
+    environment: staging
+    steps:
+      - name: Deploy to controlled staging environment
+        run: echo "Deploy FlyTrack API with Docker Compose in staging"
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - name: Deploy to production
+        run: echo "Deploy FlyTrack API with Docker Compose in production"
