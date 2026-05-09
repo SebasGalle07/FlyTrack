@@ -18,10 +18,24 @@ from app.repository import (
     registrar_reporte_equipaje,
 )
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI(
     title="FlyTrack API",
     description="Backend de AeroPuerto Smart para itinerarios, notificaciones, puertas de embarque y reportes de equipaje.",
     version="1.0.0",
+)
+
+origins = [
+    "http://localhost:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
