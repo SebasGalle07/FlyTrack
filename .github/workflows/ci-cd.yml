@@ -6,7 +6,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
 jobs:
+  # ──────────────────────────────────────────────
+  # Etapa 1: Build, test y análisis de calidad
+  # ──────────────────────────────────────────────
   build-test-quality:
     runs-on: ubuntu-latest
     steps:
@@ -21,39 +28,100 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements-dev.txt
 
-      - name: Run quality analysis
+      - name: Run quality analysis (Ruff)
         run: ruff check .
 
       - name: Run automated tests
-        run: pytest
+        run: pytest --tb=short -q
 
+  # ──────────────────────────────────────────────
+  # Etapa 2: Build y push de imagen Docker a GHCR
+  # ──────────────────────────────────────────────
   docker-image:
     runs-on: ubuntu-latest
     needs: build-test-quality
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Build container
-        run: docker build -t flytrack-api:${{ github.sha }} .
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Validate Docker Compose
-        run: docker compose config
+      - name: Extract metadata (tags, labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha
+            type=raw,value=latest
 
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  # ──────────────────────────────────────────────
+  # Etapa 3: Deploy a staging (EC2 vía SSH)
+  # ──────────────────────────────────────────────
   deploy-staging:
     runs-on: ubuntu-latest
     needs: docker-image
     if: github.ref == 'refs/heads/main'
     environment: staging
     steps:
-      - name: Deploy to controlled staging environment
-        run: echo "Deploy FlyTrack API with Docker Compose in staging"
+      - name: Deploy to EC2 staging
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/flytrack-staging
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            export TAG=sha-$(echo ${{ github.sha }} | cut -c1-7)
+            export GITHUB_REPO=${{ github.repository }}
+            docker compose pull flytrack-api
+            docker compose up -d --remove-orphans
+            echo "Waiting for health check..."
+            sleep 15
+            curl -f http://localhost:8000/health || exit 1
+            echo "Staging deployment successful"
 
+  # ──────────────────────────────────────────────
+  # Etapa 4: Deploy a producción (EC2 vía SSH)
+  # ──────────────────────────────────────────────
   deploy-production:
     runs-on: ubuntu-latest
     needs: deploy-staging
     if: github.ref == 'refs/heads/main'
     environment: production
     steps:
-      - name: Deploy to production
-        run: echo "Deploy FlyTrack API with Docker Compose in production"
+      - name: Deploy to EC2 production
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd ~/flytrack
+            echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            export TAG=sha-$(echo ${{ github.sha }} | cut -c1-7)
+            export GITHUB_REPO=${{ github.repository }}
+            docker compose pull flytrack-api
+            docker compose up -d --remove-orphans
+            echo "Waiting for health check..."
+            sleep 15
+            curl -f http://localhost:8000/health || exit 1
+            echo "Production deployment successful"

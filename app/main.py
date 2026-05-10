@@ -1,6 +1,12 @@
+import os
+import time
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import FastAPI, HTTPException, Query, status
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
+from starlette.requests import Request
+from starlette.responses import Response
 
 from app.models import (
     ErrorRespuesta,
@@ -20,15 +26,28 @@ from app.repository import (
 
 from fastapi.middleware.cors import CORSMiddleware
 
+REQUEST_COUNT = Counter(
+    "flytrack_requests_total",
+    "Total de peticiones HTTP",
+    ["method", "endpoint", "status"],
+)
+REQUEST_LATENCY = Histogram(
+    "flytrack_request_duration_seconds",
+    "Latencia de peticiones HTTP",
+    ["method", "endpoint"],
+)
+
 app = FastAPI(
     title="FlyTrack API",
     description="Backend de AeroPuerto Smart para itinerarios, notificaciones, puertas de embarque y reportes de equipaje.",
     version="1.0.0",
 )
 
+_extra_origins = os.getenv("CORS_ORIGINS", "")
 origins = [
     "http://localhost:5173",
-]
+    "http://localhost:3000",
+] + [o.strip() for o in _extra_origins.split(",") if o.strip()]
 
 app.add_middleware(
     CORSMiddleware,
@@ -37,6 +56,33 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def metrics_middleware(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    duration = time.time() - start
+    endpoint = request.url.path
+    REQUEST_COUNT.labels(
+        method=request.method, endpoint=endpoint, status=response.status_code
+    ).inc()
+    REQUEST_LATENCY.labels(method=request.method, endpoint=endpoint).observe(duration)
+    return response
+
+
+@app.get("/health", summary="Health check", tags=["ops"])
+def health_check():
+    return {
+        "status": "healthy",
+        "service": "flytrack-api",
+        "timestamp": datetime.now(tz=timezone.utc).isoformat(),
+    }
+
+
+@app.get("/metrics", summary="Prometheus metrics", tags=["ops"], include_in_schema=False)
+def metrics():
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get(

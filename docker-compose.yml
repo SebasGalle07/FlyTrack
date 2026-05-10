@@ -1,5 +1,74 @@
 services:
   flytrack-api:
+    image: ghcr.io/${GITHUB_REPO_BACKEND:-sebasgalle07/flytrack}:${TAG_BACKEND:-latest}
     build: .
     ports:
       - "8000:8000"
+    environment:
+      - CORS_ORIGINS=${CORS_ORIGINS:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    networks:
+      - flytrack-net
+
+  flytrack-frontend:
+    image: ghcr.io/${GITHUB_REPO_FRONTEND:-vivianaescobarb/front.flytrack}:${TAG_FRONTEND:-latest}
+    ports:
+      - "5173:80"
+    restart: unless-stopped
+    depends_on:
+      flytrack-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks:
+      - flytrack-net
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+    depends_on:
+      flytrack-api:
+        condition: service_healthy
+    networks:
+      - flytrack-net
+
+  grafana:
+    image: grafana/grafana:11.1.0
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=flytrack2026
+      - GF_USERS_ALLOW_SIGN_UP=false
+    restart: unless-stopped
+    depends_on:
+      - prometheus
+    networks:
+      - flytrack-net
+
+volumes:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  flytrack-net:
+    driver: bridge
