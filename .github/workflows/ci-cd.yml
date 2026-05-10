@@ -81,23 +81,28 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: staging
     steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" | base64 -d > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
       - name: Deploy to EC2 staging
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'DEPLOY_SCRIPT'
+            mkdir -p ~/flytrack-staging
             cd ~/flytrack-staging
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            export TAG=sha-$(echo ${{ github.sha }} | cut -c1-7)
-            export GITHUB_REPO=${{ github.repository }}
-            docker compose pull flytrack-api
-            docker compose up -d --remove-orphans
+            docker pull ghcr.io/${{ github.repository }}:latest
+            docker stop flytrack-api 2>/dev/null || true
+            docker rm flytrack-api 2>/dev/null || true
+            docker run -d --name flytrack-api -p 8000:8000 --restart unless-stopped ghcr.io/${{ github.repository }}:latest
             echo "Waiting for health check..."
             sleep 15
             curl -f http://localhost:8000/health || exit 1
             echo "Staging deployment successful"
+          DEPLOY_SCRIPT
 
   # ──────────────────────────────────────────────
   # Etapa 4: Deploy a producción (EC2 vía SSH)
@@ -108,20 +113,25 @@ jobs:
     if: github.ref == 'refs/heads/main'
     environment: production
     steps:
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" | base64 -d > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.EC2_HOST }} >> ~/.ssh/known_hosts 2>/dev/null
+
       - name: Deploy to EC2 production
-        uses: appleboy/ssh-action@v1
-        with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ${{ secrets.EC2_USER }}
-          key: ${{ secrets.EC2_SSH_KEY }}
-          script: |
+        run: |
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=no ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} << 'DEPLOY_SCRIPT'
+            mkdir -p ~/flytrack
             cd ~/flytrack
             echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-            export TAG=sha-$(echo ${{ github.sha }} | cut -c1-7)
-            export GITHUB_REPO=${{ github.repository }}
-            docker compose pull flytrack-api
-            docker compose up -d --remove-orphans
+            docker pull ghcr.io/${{ github.repository }}:latest
+            docker stop flytrack-api 2>/dev/null || true
+            docker rm flytrack-api 2>/dev/null || true
+            docker run -d --name flytrack-api -p 8000:8000 --restart unless-stopped ghcr.io/${{ github.repository }}:latest
             echo "Waiting for health check..."
             sleep 15
             curl -f http://localhost:8000/health || exit 1
             echo "Production deployment successful"
+          DEPLOY_SCRIPT
